@@ -1,36 +1,69 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net/http"
 	"os"
-	
-	"github.com/vasu1712/dragonAuth/internal/auth"
-	"github.com/vasu1712/dragonAuth/internal/storage"
-	"github.com/gin-gonic/gin"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/Vasu1712/dragon-auth/internal/config"
+	"github.com/Vasu1712/dragon-auth/internal/database"
+	"github.com/Vasu1712/dragon-auth/internal/routes"
 )
 
 func main() {
-	// Initialize Redis/DragonflyDB connection
-	rdb := storage.NewRedisClient(
-		os.Getenv("DRAGONFLY_PASSWORD"),
-		os.Getenv("DRAGONFLY_HOST"),
-	)
-
-	// Create Gin router with middleware
-	r := gin.Default()
-	r.Use(auth.AuthMiddleware(rdb))
-
-	// Register routes
-	authGroup := r.Group("/auth")
-	{
-		authGroup.POST("/login", auth.LoginHandler)
-		authGroup.POST("/refresh", auth.RefreshHandler)
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Start server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Initialize Valkey client
+	client, err := database.NewValkeyClient(cfg.ValkeyURI)
+	if err != nil {
+		log.Fatalf("Failed to connect to Valkey: %v", err)
 	}
-	log.Fatal(r.Run(":" + port))
+	defer client.Close()
+
+	// Test connection
+	ctx := context.Background()
+	err = client.Do(ctx, client.B().Ping().Build()).Error()
+	if err != nil {
+		log.Fatalf("Failed to ping Valkey: %v", err)
+	}
+	log.Println("Successfully connected to Valkey")
+
+	// Set up router
+	router := routes.SetupRouter(client, cfg)
+
+	// Configure server
+	srv := &http.Server{
+		Addr:    ":" + cfg.Port,
+		Handler: router,
+	}
+
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Server running on port %s", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Set up graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server shutdown failed: %v", err)
+	}
+	log.Println("Server stopped gracefully")
 }
