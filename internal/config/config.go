@@ -21,7 +21,7 @@ func Load() (*Config, error) {
 	godotenv.Load()
 
 	config := &Config{
-		Port:        getEnv("PORT", "8080"),
+		Port:        getEnv("PORT", "9090"),
 		ValkeyURI:   os.Getenv("VALKEY_URI"),
 		JWTSecret:   os.Getenv("JWT_SECRET"),
 		Environment: getEnv("ENVIRONMENT", "development"),

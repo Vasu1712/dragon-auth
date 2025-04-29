@@ -80,3 +80,28 @@ func AuthMiddleware(client valkey.Client, config *config.Config) func(http.Handl
 		})
 	}
 }
+
+func AdminMiddleware(client valkey.Client, config *config.Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// First apply the regular auth middleware
+			authMiddleware := AuthMiddleware(client, config)
+			
+			// Create a middleware that checks for admin role
+			checkAdmin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Get user from context (set by auth middleware)
+				user, ok := r.Context().Value("user").(models.User)
+				if !ok || user.Role != "admin" {
+					http.Error(w, "Unauthorized: Admin access required", http.StatusForbidden)
+					return
+				}
+				
+				// User is an admin, proceed
+				next.ServeHTTP(w, r)
+			})
+			
+			// Apply both middlewares
+			authMiddleware(checkAdmin).ServeHTTP(w, r)
+		})
+	}
+}

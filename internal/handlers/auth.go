@@ -3,14 +3,15 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/valkey-io/valkey-go"
 	"github.com/Vasu1712/dragon-auth/internal/config"
 	"github.com/Vasu1712/dragon-auth/internal/models"
 	"github.com/Vasu1712/dragon-auth/pkg/utils"
+	"github.com/google/uuid"
+	"github.com/valkey-io/valkey-go"
 )
 
 // AuthHandler handles authentication-related endpoints
@@ -102,18 +103,28 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Store token in Valkey with TTL
 	tokenKey := "token:" + token
-	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(userID).
-		Ex(int64(expiry.Sub(now).Seconds())).Build()).Error()
+	expirySeconds := int64(expiry.Sub(now).Seconds())
+	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
+		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	// Return token to user
+	userResponse := models.UserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+		Role:      user.Role,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+	
 	response := models.AuthResponse{
 		Token:   token,
 		Expires: expiry.Format(time.RFC3339),
-		User:    user,
+		User:    userResponse,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -142,7 +153,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	userKey := "user:" + req.Email
 	userJSON, err := h.client.Do(ctx, h.client.B().Get().Key(userKey).Build()).ToString()
 	if err != nil {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		http.Error(w, "Invalid credentials: Error in getting user data", http.StatusUnauthorized)
 		return
 	}
 
@@ -153,9 +164,16 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+		// After getting user data
+		log.Printf("User lookup for %s: success=%v", req.Email, userJSON != "")
+
+		// During password verification
+		log.Printf("Password verification for %s: %v", req.Email,
+			utils.CheckPasswordHash(req.Password, user.PasswordHash))
+
 	// Verify password
 	if !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		http.Error(w, "Invalid credentials: Error in verifying password", http.StatusUnauthorized)
 		return
 	}
 
@@ -169,22 +187,33 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Store token in Valkey with TTL
 	now := time.Now().UTC()
 	tokenKey := "token:" + token
+	expirySeconds := int64(expiry.Sub(now).Seconds())
 	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
-		Ex(int64(expiry.Sub(now).Seconds())).Build()).Error()
+		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	// Return token to user
+	userResponse := models.UserResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+		Role:      user.Role,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+	
 	response := models.AuthResponse{
 		Token:   token,
 		Expires: expiry.Format(time.RFC3339),
-		User:    user,
+		User:    userResponse,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+
 }
 
 // Logout handles user logout

@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to ping Valkey: %v", err)
 	}
-	log.Println("Successfully connected to Valkey")
+	log.Println("Successfully connected to Valkey on port 21463")
 
 	// Set up router
 	router := routes.SetupRouter(client, cfg)

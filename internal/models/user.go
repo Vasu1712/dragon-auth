@@ -6,7 +6,7 @@ import "time"
 type User struct {
 	ID           string    `json:"id"`
 	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"` // Never expose password hash
+	PasswordHash string    `json:"password_hash,omitempty"`
 	FirstName    string    `json:"first_name,omitempty"`
 	LastName     string    `json:"last_name,omitempty"`
 	Role         string    `json:"role"`
@@ -37,7 +37,18 @@ type RegisterRequest struct {
 
 // AuthResponse is returned on successful authentication
 type AuthResponse struct {
-	Token   string `json:"token"`
-	Expires string `json:"expires_at"`
-	User    User   `json:"user"`
+    Token   string    `json:"token"`
+    Expires string    `json:"expires_at"`
+    User    UserResponse `json:"user"`
 }
+
+type UserResponse struct {
+    ID        string    `json:"id"`
+    Email     string    `json:"email"`
+    FirstName string    `json:"first_name,omitempty"`
+    LastName  string    `json:"last_name,omitempty"`
+    Role      string    `json:"role"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
+
