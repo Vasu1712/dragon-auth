@@ -20,6 +20,9 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 	
 	// Create auth handler
 	authHandler := handlers.NewAuthHandler(client, config)
+
+	//tenant router
+	router.Use(handlers.TenantMiddleware)
 	
 	// Public routes
 	router.HandleFunc("/api/auth/register", authHandler.Register).Methods("POST")
@@ -50,9 +53,10 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 	// Admin dashboard - List all users
 	adminRouter.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
-		
+		tenantID := r.Context().Value("tenant_id").(string)
+
 		// Get all user keys from Valkey
-		userKeys, err := client.Do(ctx, client.B().Keys().Pattern("user:*").Build()).AsStrSlice()
+		userKeys, err := client.Do(ctx, client.B().Keys().Pattern(tenantID+":user:*").Build()).AsStrSlice()
 		if err != nil {
 			http.Error(w, "Failed to fetch user keys: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -276,9 +280,22 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 
 	adminRouter.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
-		
+		tenantID := r.Context().Value("tenant_id").(string)
+		projectName := "Default Project"
+
+		projectKey := tenantID + ":project:info"
+		projectJSON, err := client.Do(ctx, client.B().Get().Key(projectKey).Build()).ToString()
+		if err == nil {
+			var projectInfo map[string]interface{}
+			if json.Unmarshal([]byte(projectJSON), &projectInfo) == nil {
+				if name, ok := projectInfo["name"].(string); ok && name != "" {
+					projectName = name
+				}
+			}
+		}
 		// Get all user keys from Valkey
-		userKeys, err := client.Do(ctx, client.B().Keys().Pattern("user:*").Build()).AsStrSlice()
+		userKeys, err := client.Do(ctx, client.B().Keys().Pattern(tenantID+":user:*").Build()).AsStrSlice()
+
 		if err != nil {
 			http.Error(w, "Failed to fetch user keys: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -307,7 +324,7 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 		<!DOCTYPE html>
 		<html>
 		<head>
-			<title>Admin Dashboard</title>
+			<title>Admin Dashboard - {{.ProjectName}}</title>
 			<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
 			<style>
 				body { font-family: Arial, sans-serif; margin: 20px; }
@@ -319,13 +336,14 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 				.fa-edit { color: #4CAF50; }
 				.fa-trash-alt { color: #f44336; }
 				h1, h2 { color: #333; }
+				.project-name { color: #0066cc; font-weight: bold; }
 			</style>
 		</head>
 		<body>
-			<h1>Admin Dashboard</h1>
-			<h2>User Management</h2>
+			<h1>Dragon-auth Admin Dashboard</h1>
+			<h2>Project: <span class="project-name">{{.ProjectName}}</span></h2>
 			
-			<table>
+			<table id="userTable">
 				<thead>
 					<tr>
 						<th>Name</th>
@@ -337,9 +355,9 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 					</tr>
 				</thead>
 				<tbody>
-					{{if len .}}
-						{{range .}}
-						<tr>
+					{{if len .Users}}
+						{{range .Users}}
+						<tr id="user-row-{{.ID}}">
 							<td>{{if and .FirstName .LastName}}{{.FirstName}} {{.LastName}}{{else}}{{.Email}}{{end}}</td>
 							<td>{{.Email}}</td>
 							<td>{{.ID}}</td>
@@ -347,7 +365,7 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 							<td>{{.UpdatedAt.Format "3:04 PM Jan 2, 2006"}}</td>
 							<td>
 								<i class="fas fa-edit icon-btn" onclick="editUser('{{.ID}}')"></i>
-								<i class="fas fa-trash-alt icon-btn" onclick="deleteUser('{{.ID}}')"></i>
+								<i class="fas fa-trash-alt icon-btn" onclick="deleteUser('{{.ID}}', '{{.Email}}')"></i>
 							</td>
 						</tr>
 						{{end}}
@@ -359,8 +377,8 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 			
 			<script>
 			function editUser(id) {
+				// Edit functionality
 				console.log("Edit user:", id);
-				// Implement edit functionality
 			}
 			
 			function deleteUser(id, email) {
@@ -396,10 +414,19 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 		</body>
 		</html>
 		`))
+
 		
 		// Execute the template with the users data
 		w.Header().Set("Content-Type", "text/html")
-		err = tmpl.Execute(w, users)
+		data := struct {
+			ProjectName string
+			Users       []models.User
+		}{
+			ProjectName: projectName,
+			Users:       users,
+		}
+		
+		err = tmpl.Execute(w, data)
 		if err != nil {
 			http.Error(w, "Template execution error: "+err.Error(), http.StatusInternalServerError)
 		}

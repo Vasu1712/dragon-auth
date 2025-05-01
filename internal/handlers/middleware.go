@@ -17,6 +17,7 @@ func AuthMiddleware(client valkey.Client, config *config.Config) func(http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.Background()
+			tenantID := r.Context().Value("tenant_id").(string)
 
 			// Get token from Authorization header
 			authHeader := r.Header.Get("Authorization")
@@ -42,7 +43,7 @@ func AuthMiddleware(client valkey.Client, config *config.Config) func(http.Handl
 			}
 
 			// Check if token is in Valkey
-			tokenKey := "token:" + tokenString
+			tokenKey := utils.TokenKey(tenantID, tokenString)
 			userID, err := client.Do(ctx, client.B().Get().Key(tokenKey).Build()).ToString()
 			if err != nil {
 				http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
@@ -50,14 +51,15 @@ func AuthMiddleware(client valkey.Client, config *config.Config) func(http.Handl
 			}
 
 			// Get user email from ID
-			email, err := client.Do(ctx, client.B().Get().Key("userid:"+userID).Build()).ToString()
+			userIDKey := utils.UserIDKey(tenantID, userID)
+			email, err := client.Do(ctx, client.B().Get().Key(userIDKey).Build()).ToString()
 			if err != nil {
 				http.Error(w, "User not found", http.StatusUnauthorized)
 				return
 			}
 
 			// Get user data
-			userKey := "user:" + email
+			userKey := utils.UserKey(tenantID, email)
 			userJSON, err := client.Do(ctx, client.B().Get().Key(userKey).Build()).ToString()
 			if err != nil {
 				http.Error(w, "User not found", http.StatusUnauthorized)
@@ -104,4 +106,19 @@ func AdminMiddleware(client valkey.Client, config *config.Config) func(http.Hand
 			authMiddleware(checkAdmin).ServeHTTP(w, r)
 		})
 	}
+}
+
+func TenantMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        tenantID := r.Header.Get("X-Tenant-ID")
+        if tenantID == "" {
+            http.Error(w, "Tenant ID required", http.StatusBadRequest)
+            return
+        }
+
+        // Validate tenant exists (you'd query your tenant storage here)
+        // For simplicity, we'll assume validation happens elsewhere
+        ctx := context.WithValue(r.Context(), "tenant_id", tenantID)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
 }

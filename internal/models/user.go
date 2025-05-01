@@ -5,6 +5,7 @@ import "time"
 // User represents the user data structure
 type User struct {
 	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"password_hash,omitempty"`
 	FirstName    string    `json:"first_name,omitempty"`
@@ -29,6 +30,7 @@ type LoginRequest struct {
 
 // RegisterRequest is the expected structure for registration attempts
 type RegisterRequest struct {
+	TenantID  string `json:"tenant_id"`
 	Email     string `json:"email"`
 	Password  string `json:"password"`
 	FirstName string `json:"first_name,omitempty"`

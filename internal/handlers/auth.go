@@ -33,6 +33,12 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	var req models.RegisterRequest
 
+	tenantID, ok := r.Context().Value("tenant_id").(string)
+    if !ok || tenantID == "" {
+        http.Error(w, "Invalid tenant context", http.StatusBadRequest)
+        return
+    }
+
 	// Parse request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -46,7 +52,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if user already exists
-	userKey := "user:" + req.Email
+	userKey := utils.UserKey(tenantID, req.Email)
 	exists, err := h.client.Do(ctx, h.client.B().Exists().Key(userKey).Build()).AsInt64()
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
@@ -88,7 +94,8 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create mapping from ID to email for lookup
-	err = h.client.Do(ctx, h.client.B().Set().Key("userid:"+userID).Value(req.Email).Build()).Error()
+	userIDKey := utils.UserIDKey(tenantID, userID)
+	err = h.client.Do(ctx, h.client.B().Set().Key(userIDKey).Value(req.Email).Build()).Error()
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -102,7 +109,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store token in Valkey with TTL
-	tokenKey := "token:" + token
+	tokenKey := utils.TokenKey(tenantID, token)
 	expirySeconds := int64(expiry.Sub(now).Seconds())
 	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
 		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
@@ -134,6 +141,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 // Login handles user login
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value("tenant_id").(string)
 	ctx := context.Background()
 	var req models.LoginRequest
 
@@ -143,6 +151,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !ok || tenantID == "" {
+        http.Error(w, "Invalid tenant context", http.StatusBadRequest)
+        return
+    }
+
 	// Validate input
 	if req.Email == "" || req.Password == "" {
 		http.Error(w, "Email and password are required", http.StatusBadRequest)
@@ -150,7 +163,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get user data
-	userKey := "user:" + req.Email
+	userKey := utils.UserKey(tenantID, req.Email)
 	userJSON, err := h.client.Do(ctx, h.client.B().Get().Key(userKey).Build()).ToString()
 	if err != nil {
 		http.Error(w, "Invalid credentials: Error in getting user data", http.StatusUnauthorized)
@@ -186,7 +199,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Store token in Valkey with TTL
 	now := time.Now().UTC()
-	tokenKey := "token:" + token
+	tokenKey := utils.TokenKey(tenantID, token)
 	expirySeconds := int64(expiry.Sub(now).Seconds())
 	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
 		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
