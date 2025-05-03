@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"text/template"
 
 	"net/http"
@@ -281,9 +282,83 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 	adminRouter.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
 		tenantID := r.Context().Value("tenant_id").(string)
-		projectName := "Default Project"
-
-		projectKey := tenantID + ":project:info"
+		isSuperAdmin := r.Context().Value("is_superadmin").(bool)
+		
+		// For superadmin: Get all tenant/project IDs
+		allTenants := []string{tenantID} // Default to current tenant
+		selectedTenant := tenantID
+		
+		// Helper function to check if a slice contains a string
+		contains := func(slice []string, item string) bool {
+			for _, s := range slice {
+				if s == item {
+					return true
+				}
+			}
+			return false
+		}
+		
+		// If superadmin, get all tenant IDs
+		if isSuperAdmin {
+			// Get query parameter for selected tenant (if any)
+			if selectedParam := r.URL.Query().Get("tenant"); selectedParam != "" {
+				selectedTenant = selectedParam
+			}
+			
+			// Get all project/tenant keys - using both formats for compatibility
+			projectKeys1, err1 := client.Do(ctx, client.B().Keys().Pattern("*:project:info").Build()).AsStrSlice()
+			projectKeys2, err2 := client.Do(ctx, client.B().Keys().Pattern("*:project:*").Build()).AsStrSlice()
+			
+			// Combine results from both patterns
+			projectKeys := []string{}
+			if err1 == nil {
+				projectKeys = append(projectKeys, projectKeys1...)
+			}
+			if err2 == nil {
+				projectKeys = append(projectKeys, projectKeys2...)
+			}
+			
+			// Extract tenant IDs from project keys
+			for _, key := range projectKeys {
+				parts := strings.Split(key, ":")
+				if len(parts) > 0 {
+					tid := parts[0]
+					if tid != "" && !contains(allTenants, tid) {
+						allTenants = append(allTenants, tid)
+					}
+				}
+			}
+			
+			// Explicitly add qwiksift if it's not already in the list
+			if !contains(allTenants, "qwiksift") {
+				allTenants = append(allTenants, "qwiksift")
+			}
+		}
+		
+		// Get all tenant project names for dropdown
+		projectNames := make(map[string]string)
+		for _, tid := range allTenants {
+			// Use tenant ID as the default name instead of appending "(Default)"
+			projectNames[tid] = tid
+			
+			// Try to get project name from database
+			pKey := tid + ":project:info"
+			pJSON, err := client.Do(ctx, client.B().Get().Key(pKey).Build()).ToString()
+			if err == nil {
+				var pInfo map[string]interface{}
+				if json.Unmarshal([]byte(pJSON), &pInfo) == nil {
+					if name, ok := pInfo["name"].(string); ok && name != "" {
+						projectNames[tid] = name
+					}
+				}
+			}
+		}
+		
+		// Default project name to the tenant ID instead of "Default Project"
+		projectName := selectedTenant
+		
+		// Try to get the actual project name from the database
+		projectKey := selectedTenant + ":project:info"
 		projectJSON, err := client.Do(ctx, client.B().Get().Key(projectKey).Build()).ToString()
 		if err == nil {
 			var projectInfo map[string]interface{}
@@ -293,9 +368,9 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 				}
 			}
 		}
-		// Get all user keys from Valkey
-		userKeys, err := client.Do(ctx, client.B().Keys().Pattern(tenantID+":user:*").Build()).AsStrSlice()
-
+		
+		// Get user keys using the selected tenant
+		userKeys, err := client.Do(ctx, client.B().Keys().Pattern(selectedTenant+":user:*").Build()).AsStrSlice()
 		if err != nil {
 			http.Error(w, "Failed to fetch user keys: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -319,12 +394,12 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 			users = append(users, user)
 		}
 		
-		// Create a template with proper HTML structure
+		// Create a template with proper HTML structure and project dropdown
 		tmpl := template.Must(template.New("dashboard").Parse(`
 		<!DOCTYPE html>
 		<html>
 		<head>
-			<title>Admin Dashboard - {{.ProjectName}}</title>
+			<title>Admin Dashboard - {{.SelectedTenant}}</title>
 			<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
 			<style>
 				body { font-family: Arial, sans-serif; margin: 20px; }
@@ -337,10 +412,54 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 				.fa-trash-alt { color: #f44336; }
 				h1, h2 { color: #333; }
 				.project-name { color: #0066cc; font-weight: bold; }
+				.superadmin-badge {
+					background-color: #ff6b6b;
+					color: white;
+					padding: 4px 8px;
+					border-radius: 4px;
+					margin-left: 10px;
+					font-size: 0.8em;
+				}
+				.project-selector {
+					margin: 20px 0;
+					padding: 10px;
+					background-color: #f5f5f5;
+					border-radius: 4px;
+				}
+				select {
+					padding: 8px;
+					border-radius: 4px;
+					border: 1px solid #ddd;
+				}
+				button {
+					padding: 8px 16px;
+					background-color: #4CAF50;
+					color: white;
+					border: none;
+					border-radius: 4px;
+					cursor: pointer;
+				}
+				button:hover {
+					background-color: #45a049;
+				}
 			</style>
 		</head>
 		<body>
-			<h1>Dragon-auth Admin Dashboard</h1>
+			<h1>Admin Dashboard {{if .IsSuperAdmin}}<span class="superadmin-badge">Super Admin</span>{{end}}</h1>
+			
+			{{if .IsSuperAdmin}}
+			<div class="project-selector">
+				<form id="projectForm">
+					<label for="tenant">Select Project:</label>
+					<select name="tenant" id="tenant" onchange="this.form.submit()">
+						{{range $tid, $name := .ProjectNames}}
+						<option value="{{$tid}}" {{if eq $tid $.SelectedTenant}}selected{{end}}>{{$name}}</option>
+						{{end}}
+					</select>
+				</form>
+			</div>
+			{{end}}
+			
 			<h2>Project: <span class="project-name">{{.ProjectName}}</span></h2>
 			
 			<table id="userTable">
@@ -349,6 +468,7 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 						<th>Name</th>
 						<th>E-mail</th>
 						<th>User ID</th>
+						<th>Project</th>
 						<th>Created At</th>
 						<th>Login At</th>
 						<th>Actions</th>
@@ -361,37 +481,40 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 							<td>{{if and .FirstName .LastName}}{{.FirstName}} {{.LastName}}{{else}}{{.Email}}{{end}}</td>
 							<td>{{.Email}}</td>
 							<td>{{.ID}}</td>
+							<td>{{$.ProjectName}}</td>
 							<td>{{.CreatedAt.Format "3:04 PM Jan 2, 2006"}}</td>
 							<td>{{.UpdatedAt.Format "3:04 PM Jan 2, 2006"}}</td>
 							<td>
-								<i class="fas fa-edit icon-btn" onclick="editUser('{{.ID}}')"></i>
-								<i class="fas fa-trash-alt icon-btn" onclick="deleteUser('{{.ID}}', '{{.Email}}')"></i>
+								<i class="fas fa-edit icon-btn" onclick="editUser('{{.ID}}', '{{.Email}}')"></i>
+								<i class="fas fa-trash-alt icon-btn" onclick="deleteUser('{{.ID}}', '{{.Email}}', '{{$.SelectedTenant}}')"></i>
 							</td>
 						</tr>
 						{{end}}
 					{{else}}
-						<tr><td colspan="6">No users found</td></tr>
+						<tr><td colspan="7">No users found</td></tr>
 					{{end}}
 				</tbody>
 			</table>
 			
 			<script>
-			function editUser(id) {
-				// Edit functionality
-				console.log("Edit user:", id);
+			function editUser(id, email) {
+				console.log("Edit user:", id, email);
+				// Implement edit functionality
+				alert("Edit functionality not yet implemented for user: " + email);
 			}
 			
-			function deleteUser(id, email) {
+			function deleteUser(id, email, tenant) {
 				// Confirm deletion
 				if (!confirm("Are you sure you want to delete user: " + email + "?")) {
 					return;
 				}
 				
-				// Send delete request
+				// Send delete request with tenant header
 				fetch('/admin/users/' + email, {
 					method: 'DELETE',
 					headers: {
-						'Content-Type': 'application/json'
+						'Content-Type': 'application/json',
+						'X-Tenant-ID': tenant
 					}
 				})
 				.then(response => {
@@ -414,16 +537,21 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 		</body>
 		</html>
 		`))
-
 		
-		// Execute the template with the users data
+		// Execute the template with project and users data
 		w.Header().Set("Content-Type", "text/html")
 		data := struct {
-			ProjectName string
-			Users       []models.User
+			ProjectName    string
+			Users          []models.User
+			IsSuperAdmin   bool
+			ProjectNames   map[string]string
+			SelectedTenant string
 		}{
-			ProjectName: projectName,
-			Users:       users,
+			ProjectName:    projectName,
+			Users:          users,
+			IsSuperAdmin:   isSuperAdmin,
+			ProjectNames:   projectNames,
+			SelectedTenant: selectedTenant,
 		}
 		
 		err = tmpl.Execute(w, data)
@@ -431,7 +559,6 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 			http.Error(w, "Template execution error: "+err.Error(), http.StatusInternalServerError)
 		}
 	}).Methods("GET")
-	
 	
 
 	return router

@@ -3,13 +3,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
-	"github.com/valkey-io/valkey-go"
 	"github.com/Vasu1712/dragon-auth/internal/config"
 	"github.com/Vasu1712/dragon-auth/internal/models"
 	"github.com/Vasu1712/dragon-auth/pkg/utils"
+	"github.com/valkey-io/valkey-go"
 )
 
 // AuthMiddleware validates JWT tokens and adds user info to request context
@@ -84,29 +85,45 @@ func AuthMiddleware(client valkey.Client, config *config.Config) func(http.Handl
 }
 
 func AdminMiddleware(client valkey.Client, config *config.Config) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// First apply the regular auth middleware
-			authMiddleware := AuthMiddleware(client, config)
-			
-			// Create a middleware that checks for admin role
-			checkAdmin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Get user from context (set by auth middleware)
-				user, ok := r.Context().Value("user").(models.User)
-				if !ok || user.Role != "admin" {
-					http.Error(w, "Unauthorized: Admin access required", http.StatusForbidden)
-					return
-				}
-				
-				// User is an admin, proceed
-				next.ServeHTTP(w, r)
-			})
-			
-			// Apply both middlewares
-			authMiddleware(checkAdmin).ServeHTTP(w, r)
-		})
-	}
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // First apply the regular auth middleware
+            authMiddleware := AuthMiddleware(client, config)
+            
+            // Create a middleware that checks for admin role or superadmin email
+            checkAdmin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                // Get user from context (set by auth middleware)
+                user, ok := r.Context().Value("user").(models.User)
+                
+                // Check if user is superadmin by email
+                isSuperAdmin := user.Email == "vasupal.17.12.2002@gmail.com"
+                
+                // Allow if user is admin or superadmin
+                if !ok || (user.Role != "admin" && !isSuperAdmin) {
+                    http.Error(w, "Unauthorized: Admin access required", http.StatusForbidden)
+                    return
+                }
+                
+                // Add superadmin flag to context
+                ctx := context.WithValue(r.Context(), "is_superadmin", isSuperAdmin)
+
+				tenantID := r.Context().Value("tenant_id").(string)
+                if isSuperAdmin && tenantID == "all" {
+                    // Mark context to fetch all tenants
+                    ctx = context.WithValue(ctx, "fetch_all_tenants", true)
+                    log.Println("Superadmin mode activated, fetching all tenants")
+                }
+                
+                // User is an admin or superadmin, proceed
+                next.ServeHTTP(w, r.WithContext(ctx))
+            })
+            
+            // Apply both middlewares
+            authMiddleware(checkAdmin).ServeHTTP(w, r)
+        })
+    }
 }
+
 
 func TenantMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
