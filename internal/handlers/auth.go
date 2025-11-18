@@ -83,6 +83,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Role:         "user",
 		CreatedAt:    now,
 		UpdatedAt:    now,
+		PhoneNumber:  req.PhoneNumber,
 	}
 
 	// Store user data

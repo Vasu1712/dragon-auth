@@ -14,6 +14,10 @@ type Config struct {
 	JWTSecret   string
 	Environment string
 	DefaultTenantID string
+	WhatsAppAPIKey     string
+    WhatsAppBaseURL    string
+    WhatsAppPhoneID    string
+    WhatsAppBusinessID string
 }
 
 // Load reads configuration from environment variables
@@ -27,6 +31,8 @@ func Load() (*Config, error) {
 		JWTSecret:   os.Getenv("JWT_SECRET"),
 		Environment: getEnv("ENVIRONMENT", "development"),
 		DefaultTenantID: getEnv("DEFAULT_TENANT_ID", "default"),
+		WhatsAppAPIKey:  os.Getenv("WHATSAPP_API_KEY"),
+        WhatsAppBaseURL: getEnv("WHATSAPP_BASE_URL", "https://api.whatsapp.com/v1"),
 	}
 
 	// Validate required fields

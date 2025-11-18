@@ -11,6 +11,7 @@ import (
 	"github.com/Vasu1712/dragon-auth/internal/config"
 	"github.com/Vasu1712/dragon-auth/internal/handlers"
 	"github.com/Vasu1712/dragon-auth/internal/models"
+	"github.com/Vasu1712/dragon-auth/pkg/whatsapp"
 	"github.com/gorilla/mux"
 	"github.com/valkey-io/valkey-go"
 )
@@ -46,6 +47,20 @@ func SetupRouter(client valkey.Client, config *config.Config) *mux.Router {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(user)
 	}).Methods("GET")
+
+	// OTP routes
+	whatsappClient := whatsapp.NewClient(
+		config.WhatsAppAPIKey,
+		config.WhatsAppBaseURL,
+		config.WhatsAppPhoneID,
+		config.WhatsAppBusinessID,
+	)
+    
+    // Create OTP handler
+    otpHandler := handlers.NewOTPHandler(client, config, whatsappClient)
+
+	router.HandleFunc("/api/auth/request-otp", otpHandler.RequestOTP).Methods("POST")
+    router.HandleFunc("/api/auth/login-with-otp", otpHandler.VerifyOTP).Methods("POST")
 	
 	// Create admin subrouter with additional admin middleware
 	adminRouter := router.PathPrefix("/admin").Subrouter()

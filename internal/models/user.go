@@ -10,6 +10,7 @@ type User struct {
 	PasswordHash string    `json:"password_hash,omitempty"`
 	FirstName    string    `json:"first_name,omitempty"`
 	LastName     string    `json:"last_name,omitempty"`
+	PhoneNumber  string    `json:"phone_number,omitempty"`
 	Role         string    `json:"role"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -35,6 +36,7 @@ type RegisterRequest struct {
 	Password  string `json:"password"`
 	FirstName string `json:"first_name,omitempty"`
 	LastName  string `json:"last_name,omitempty"`
+	PhoneNumber  string    `json:"phone_number,omitempty"`
 }
 
 // AuthResponse is returned on successful authentication
@@ -54,3 +56,20 @@ type UserResponse struct {
     UpdatedAt time.Time `json:"updated_at"`
 }
 
+// OTPRequest represents a request to send an OTP
+type OTPRequest struct {
+    PhoneNumber string `json:"phone_number"`
+}
+
+// OTPVerifyRequest represents a request to verify an OTP
+type OTPVerifyRequest struct {
+    PhoneNumber string `json:"phone_number"`
+    OTP         string `json:"otp"`
+}
+
+// OTPResponse represents the response after sending an OTP
+type OTPResponse struct {
+    Success  bool   `json:"success"`
+    Message  string `json:"message"`
+    ExpireAt string `json:"expire_at,omitempty"`
+}
