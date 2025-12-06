@@ -5,13 +5,13 @@ import "time"
 // User represents the user data structure
 type User struct {
 	ID           string    `json:"id"`
-	TenantID     string    `json:"tenant_id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"password_hash,omitempty"`
 	FirstName    string    `json:"first_name,omitempty"`
 	LastName     string    `json:"last_name,omitempty"`
 	PhoneNumber  string    `json:"phone_number,omitempty"`
 	Role         string    `json:"role"`
+	Project      string    `json:"project"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -27,16 +27,17 @@ type Session struct {
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Project  string `json:"project"`
 }
 
 // RegisterRequest is the expected structure for registration attempts
 type RegisterRequest struct {
-	TenantID  string `json:"tenant_id"`
 	Email     string `json:"email"`
 	Password  string `json:"password"`
 	FirstName string `json:"first_name,omitempty"`
 	LastName  string `json:"last_name,omitempty"`
 	PhoneNumber  string    `json:"phone_number,omitempty"`
+	Project      string    `json:"project"`
 }
 
 // AuthResponse is returned on successful authentication
@@ -52,6 +53,7 @@ type UserResponse struct {
     FirstName string    `json:"first_name,omitempty"`
     LastName  string    `json:"last_name,omitempty"`
     Role      string    `json:"role"`
+	Project   string    `json:"project"`
     CreatedAt time.Time `json:"created_at"`
     UpdatedAt time.Time `json:"updated_at"`
 }

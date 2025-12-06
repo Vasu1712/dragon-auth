@@ -2,16 +2,16 @@ package utils
 
 import "github.com/google/uuid"
 
-func UserKey(tenantID, email string) string {
-    return tenantID + ":user:" + email
+func UserKey(project, email string) string {
+    return project + ":user:" + email
 }
 
-func TokenKey(tenantID, token string) string {
-    return tenantID + ":token:" + token
+func TokenKey(project, token string) string {
+    return project + ":token:" + token
 }
 
-func UserIDKey(tenantID, userID string) string {
-    return tenantID + ":userid:" + userID
+func UserIDKey(project, userID string) string {
+    return project + ":userid:" + userID
 }
 
 func GenerateAPIKey() string {

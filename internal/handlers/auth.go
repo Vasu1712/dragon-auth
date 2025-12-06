@@ -33,31 +33,26 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	var req models.RegisterRequest
 
-	tenantID, ok := r.Context().Value("tenant_id").(string)
-    if !ok || tenantID == "" {
-        http.Error(w, "Invalid tenant context", http.StatusBadRequest)
-        return
-    }
-
-	// Parse request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Validate input
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, "Email and password are required", http.StatusBadRequest)
+	if req.Email == "" || req.Password == "" || req.Project == "" {
+		http.Error(w, "Email, password and project are required", http.StatusBadRequest)
 		return
 	}
 
-	// Check if user already exists
-	userKey := utils.UserKey(tenantID, req.Email)
+	project := req.Project
+
+	// Check if user already exists in this project
+	userKey := utils.UserKey(project, req.Email)
 	exists, err := h.client.Do(ctx, h.client.B().Exists().Key(userKey).Build()).AsInt64()
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
+
 	if exists > 0 {
 		http.Error(w, "Email already registered", http.StatusConflict)
 		return
@@ -74,13 +69,21 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	userID := uuid.New().String()
 	now := time.Now().UTC()
 
+	role := "user"
+
+	// Optional: Allow a specific superadmin email (defined in config/env) to register as superadmin
+	if h.config.SuperAdminEmail != "" && req.Email == h.config.SuperAdminEmail {
+		role = "superadmin"
+	}
+
 	user := models.User{
 		ID:           userID,
 		Email:        req.Email,
 		PasswordHash: hashedPassword,
 		FirstName:    req.FirstName,
 		LastName:     req.LastName,
-		Role:         "user",
+		Role:         role, // Use the forced role
+		Project:      project,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		PhoneNumber:  req.PhoneNumber,
@@ -94,141 +97,112 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create mapping from ID to email for lookup
-	userIDKey := utils.UserIDKey(tenantID, userID)
+	// Create mapping from ID to email for lookup (scoped to project)
+	userIDKey := utils.UserIDKey(project, userID)
 	err = h.client.Do(ctx, h.client.B().Set().Key(userIDKey).Value(req.Email).Build()).Error()
 	if err != nil {
+		// In a real app, you might want to rollback the previous set here
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	// Generate JWT token
-	token, expiry, err := utils.GenerateJWT(user, h.config.JWTSecret)
-	if err != nil {
-		http.Error(w, "Error generating token", http.StatusInternalServerError)
-		return
-	}
-
-	// Store token in Valkey with TTL
-	tokenKey := utils.TokenKey(tenantID, token)
-	expirySeconds := int64(expiry.Sub(now).Seconds())
-	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
-		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
-	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
-
-	userResponse := models.UserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		FirstName: user.FirstName,
-		LastName:  user.LastName,
-		Role:      user.Role,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-	}
-	
-	response := models.AuthResponse{
-		Token:   token,
-		Expires: expiry.Format(time.RFC3339),
-		User:    userResponse,
-	}
-
+	// Return success message (No token generated)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "User registered successfully",
+		"user": models.UserResponse{
+			ID:        user.ID,
+			Email:     user.Email,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			Role:      user.Role,
+			Project:   user.Project,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+		},
+	})
 }
 
 // Login handles user login
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := r.Context().Value("tenant_id").(string)
-	ctx := context.Background()
-	var req models.LoginRequest
+    ctx := context.Background()
+    var req models.LoginRequest
 
-	// Parse request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if !ok || tenantID == "" {
-        http.Error(w, "Invalid tenant context", http.StatusBadRequest)
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        log.Printf("Decode error: %v", err)
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
         return
     }
 
-	// Validate input
-	if req.Email == "" || req.Password == "" {
-		http.Error(w, "Email and password are required", http.StatusBadRequest)
-		return
-	}
+    if req.Email == "" || req.Password == "" || req.Project == "" {
+        http.Error(w, "Email, password and project are required", http.StatusBadRequest)
+        return
+    }
 
-	// Get user data
-	userKey := utils.UserKey(tenantID, req.Email)
-	userJSON, err := h.client.Do(ctx, h.client.B().Get().Key(userKey).Build()).ToString()
-	if err != nil {
-		http.Error(w, "Invalid credentials: Error in getting user data", http.StatusUnauthorized)
-		return
-	}
+    project := req.Project
 
-	// Parse user data
-	var user models.User
-	if err := json.Unmarshal([]byte(userJSON), &user); err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
+    userKey := utils.UserKey(project, req.Email)
 
-		// After getting user data
-		log.Printf("User lookup for %s: success=%v", req.Email, userJSON != "")
+    userJSON, err := h.client.Do(ctx, h.client.B().Get().Key(userKey).Build()).ToString()
+    if err != nil {
+        log.Printf("User lookup failed for %s@%s: %v", req.Email, project, err)
+        http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+        return
+    }
 
-		// During password verification
-		log.Printf("Password verification for %s: %v", req.Email,
-			utils.CheckPasswordHash(req.Password, user.PasswordHash))
+    var user models.User
+    if err := json.Unmarshal([]byte(userJSON), &user); err != nil {
+        http.Error(w, "Database error", http.StatusInternalServerError)
+        return
+    }
 
-	// Verify password
-	if !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
-		http.Error(w, "Invalid credentials: Error in verifying password", http.StatusUnauthorized)
-		return
-	}
+    log.Printf("User lookup for %s: success=%v", req.Email, userJSON != "")
+    log.Printf("Password verification for %s: %v", req.Email, utils.CheckPasswordHash(req.Password, user.PasswordHash))
 
-	// Generate JWT token
-	token, expiry, err := utils.GenerateJWT(user, h.config.JWTSecret)
-	if err != nil {
-		http.Error(w, "Error generating token", http.StatusInternalServerError)
-		return
-	}
+    if !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
+        http.Error(w, "Invalid credentials: Error in verifying password", http.StatusUnauthorized)
+        return
+    }
 
-	// Store token in Valkey with TTL
-	now := time.Now().UTC()
-	tokenKey := utils.TokenKey(tenantID, token)
-	expirySeconds := int64(expiry.Sub(now).Seconds())
-	err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
-		Ex(time.Duration(expirySeconds) * time.Second).Build()).Error()
-	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
+    token, expiry, err := utils.GenerateJWT(user, h.config.JWTSecret)
+    if err != nil {
+        http.Error(w, "Error generating token", http.StatusInternalServerError)
+        return
+    }
 
-	userResponse := models.UserResponse{
-		ID:        user.ID,
-		Email:     user.Email,
-		FirstName: user.FirstName,
-		LastName:  user.LastName,
-		Role:      user.Role,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-	}
-	
-	response := models.AuthResponse{
-		Token:   token,
-		Expires: expiry.Format(time.RFC3339),
-		User:    userResponse,
-	}
+    now := time.Now().UTC()
+    tokenKey := utils.TokenKey(project, token)
+    expirySeconds := int64(expiry.Sub(now).Seconds())
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+    err = h.client.Do(ctx, h.client.B().Set().Key(tokenKey).Value(user.ID).
+        Ex(time.Duration(expirySeconds)*time.Second).Build()).Error()
+    if err != nil {
+        http.Error(w, "Database error", http.StatusInternalServerError)
+        return
+    }
 
+    userResponse := models.UserResponse{
+        ID:        user.ID,
+        Email:     user.Email,
+        FirstName: user.FirstName,
+        LastName:  user.LastName,
+        Role:      user.Role,
+        Project:   user.Project, // <--- This field MUST be here
+        CreatedAt: user.CreatedAt,
+        UpdatedAt: user.UpdatedAt,
+    }
+
+    response := models.AuthResponse{
+        Token:   token,
+        Expires: expiry.Format(time.RFC3339),
+        User:    userResponse,
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
 }
+
 
 // Logout handles user logout
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
