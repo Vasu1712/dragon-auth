@@ -18,6 +18,7 @@ type Config struct {
     WhatsAppPhoneID    string
     WhatsAppBusinessID string
 	SuperAdminEmail    string
+	PasswordPepper     string
 }
 
 // Load reads configuration from environment variables
@@ -33,6 +34,7 @@ func Load() (*Config, error) {
 		WhatsAppAPIKey:  os.Getenv("WHATSAPP_API_KEY"),
         WhatsAppBaseURL: getEnv("WHATSAPP_BASE_URL", "https://api.whatsapp.com/v1"),
 		SuperAdminEmail:    os.Getenv("SUPERADMIN_EMAIL"),
+		PasswordPepper:   os.Getenv("PASSWORD_PEPPER"),
 	}
 
 	// Validate required fields
