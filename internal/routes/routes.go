@@ -1,18 +1,18 @@
 package routes
 
 import (
-    "context"
-    "encoding/json"
-    "html/template"
-    "log"
-    "net/http"
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
 
-    "github.com/Vasu1712/dragon-auth/internal/config"
-    "github.com/Vasu1712/dragon-auth/internal/handlers"
-    "github.com/Vasu1712/dragon-auth/internal/models"
-    "github.com/Vasu1712/dragon-auth/pkg/whatsapp"
-    "github.com/gorilla/mux"
-    "github.com/valkey-io/valkey-go"
+	"github.com/Vasu1712/dragon-auth/internal/config"
+	"github.com/Vasu1712/dragon-auth/internal/handlers"
+	"github.com/Vasu1712/dragon-auth/internal/models"
+	"github.com/Vasu1712/dragon-auth/pkg/whatsapp"
+	"github.com/gorilla/mux"
+	"github.com/valkey-io/valkey-go"
 )
 
 // SetupRouter configures and returns the application router
@@ -416,188 +416,81 @@ func SetupRouter(client valkey.Client, cfg *config.Config) *mux.Router {
         w.WriteHeader(http.StatusNoContent)
     }).Methods("DELETE")
 
-    adminRouter.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-        u, _ := r.Context().Value("user").(models.User)
-        isSuper := false
-        if v := r.Context().Value("is_superadmin"); v != nil {
-            isSuper = v.(bool)
-        }
+	adminRouter.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
 
-        tmpl := template.Must(template.New("dashboard").Parse(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>Dragon Auth Admin Dashboard</title>
-			<style>
-				body { font-family: Arial, sans-serif; margin: 20px; }
-				h1 { color: #333; }
-				.card { background: #f9f9f9; border-radius: 5px; padding: 15px; margin-bottom: 15px; }
-				table { width: 100%; border-collapse: collapse; }
-				th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
-				th { background-color: #f2f2f2; }
-				.button { background: #4CAF50; color: white; padding: 8px 14px; border: none; border-radius: 4px; cursor: pointer; }
-				.delete-btn { background: #f44336; color: white; padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; }
-				.filter-section { margin-bottom: 10px; }
-				select { padding: 6px; border-radius: 4px; }
-				.badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; background:#ff9800; color:#fff; margin-left:8px;}
-			</style>
-			<script>
-				const isSuperAdmin = {{if .IsSuperAdmin}}true{{else}}false{{end}};
+		// user and is_superadmin are set by AuthMiddleware + AdminMiddleware
+		u, _ := r.Context().Value("user").(models.User)
+		isSuper := false
+		if v := r.Context().Value("is_superadmin"); v != nil {
+			isSuper = v.(bool)
+		}
 
-				async function loadUsers(project) {
-					try {
-						const token = localStorage.getItem('admin_token');
-						if (!token) {
-							document.getElementById('error').innerText = 'No admin token in localStorage.';
-							return;
-						}
+		callerRole := "admin"
+		if isSuper {
+			callerRole = "superadmin"
+		}
+		var keyPattern string
+		if isSuper {
+			keyPattern = "*:user:*"
+		} else {
+			if u.Project == "" {
+				http.Error(w, "No project associated with admin user", http.StatusBadRequest)
+				return
+			}
+			keyPattern = u.Project + ":user:*"
+		}
 
-						let url = '/admin/users';
-						if (project) {
-							url += '?project=' + encodeURIComponent(project);
-						}
+		userKeys, err := client.Do(ctx, client.B().Keys().Pattern(keyPattern).Build()).AsStrSlice()
+		if err != nil {
+			http.Error(w, "Failed to fetch user keys: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-						const res = await fetch(url, {
-							headers: { 'Authorization': 'Bearer ' + token }
-						});
+		type DashboardUser struct {
+			Name      string    `json:"name"`
+			Email     string    `json:"email"`
+			Role      string    `json:"role"`
+			Project   string    `json:"project"`
+			LastLogin time.Time `json:"last_login"`
+		}
 
-						if (!res.ok) {
-							const text = await res.text();
-							document.getElementById('error').innerText = 'Error: ' + text;
-							return;
-						}
+		users := make([]DashboardUser, 0, len(userKeys))
 
-						const data = await res.json();
-						document.getElementById('error').innerText = '';
+		for _, key := range userKeys {
+			userJSON, err := client.Do(ctx, client.B().Get().Key(key).Build()).ToString()
+			if err != nil {
+				continue
+			}
+			var uRec models.User
+			if err := json.Unmarshal([]byte(userJSON), &uRec); err != nil {
+				continue
+			}
 
-						const tbody = document.getElementById('usersTable');
-						tbody.innerHTML = '';
+			// For non-superadmin, enforce project isolation
+			if !isSuper && uRec.Project != u.Project {
+				continue
+			}
 
-						if (!data.users || data.users.length === 0) {
-							tbody.innerHTML = '<tr><td colspan="6">No users found</td></tr>';
-							document.getElementById('userCount').innerText = '0';
-						} else {
-							data.users.forEach(u => {
-								const tr = document.createElement('tr');
-								tr.innerHTML =
-									'<td>' + (u.first_name || '') + ' ' + (u.last_name || '') + '</td>' +
-									'<td>' + u.email + '</td>' +
-									'<td>' + (u.role || '') + '</td>' +
-									'<td>' + (u.project || '') + '</td>' +
-									'<td>' + new Date(u.created_at).toLocaleString() + '</td>' +
-									'<td><button class="delete-btn" onclick="deleteUser(\\'' + u.email + '\\', \'' + (u.project || '') + '\')">Delete</button></td>';
-								tbody.appendChild(tr);
-							});
-							document.getElementById('userCount').innerText = data.total;
-						}
+			users = append(users, DashboardUser{
+				Name:      strings.TrimSpace(uRec.FirstName + " " + uRec.LastName),
+				Email:     uRec.Email,
+				Role:      uRec.Role,
+				Project:   uRec.Project,
+				LastLogin: uRec.UpdatedAt, // using UpdatedAt as last_login
+			})
+		}
 
-						if (isSuperAdmin && data.projects) {
-							const sel = document.getElementById('projectFilter');
-							sel.innerHTML = '<option value="">All projects</option>';
-							data.projects.forEach(p => {
-								const opt = document.createElement('option');
-								opt.value = p;
-								opt.textContent = p;
-								if (p === project) opt.selected = true;
-								sel.appendChild(opt);
-							});
-							document.getElementById('filterSection').style.display = 'block';
-						}
+		resp := map[string]interface{}{
+			"total": len(users),
+			"role": callerRole,
+			"users": users,
+		}
 
-					} catch (err) {
-						document.getElementById('error').innerText = 'Error: ' + err.message;
-					}
-				}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}).Methods("GET")
 
-				function onProjectChange() {
-					const p = document.getElementById('projectFilter').value;
-					loadUsers(p);
-				}
-
-				async function deleteUser(email, project) {
-					if (!confirm('Delete user ' + email + '?')) return;
-
-					const token = localStorage.getItem('admin_token');
-					if (!token) {
-						alert('No admin token in localStorage.');
-						return;
-					}
-
-					let url = '/admin/users/' + encodeURIComponent(email);
-					if (project) {
-						url += '?project=' + encodeURIComponent(project);
-					}
-
-					const res = await fetch(url, {
-						method: 'DELETE',
-						headers: { 'Authorization': 'Bearer ' + token }
-					});
-
-					if (res.ok) {
-						alert('User deleted');
-						const currentProject = document.getElementById('projectFilter') ? document.getElementById('projectFilter').value : '';
-						loadUsers(currentProject);
-					} else {
-						const text = await res.text();
-						alert('Failed to delete user: ' + text);
-					}
-				}
-
-				window.onload = function() {
-					loadUsers();
-				};
-			</script>
-		</head>
-		<body>
-			<h1>Dragon Auth Admin Dashboard {{if .IsSuperAdmin}}<span class="badge">SUPERADMIN</span>{{end}}</h1>
-
-			<div id="error" style="color:red;margin-bottom:10px;"></div>
-
-			{{if .IsSuperAdmin}}
-			<div id="filterSection" class="card filter-section" style="display:none;">
-				<strong>Filter by project:</strong>
-				<select id="projectFilter" onchange="onProjectChange()"></select>
-			</div>
-			{{end}}
-
-			<div class="card">
-				<h2>Users (<span id="userCount">0</span>)</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>E-mail</th>
-							<th>Role</th>
-							<th>Project</th>
-							<th>Created At</th>
-							<th>Actions</th>
-						</tr>
-					</thead>
-					<tbody id="usersTable">
-						<tr><td colspan="6">Loading...</td></tr>
-					</tbody>
-				</table>
-				<button class="button" onclick="loadUsers()">Refresh</button>
-			</div>
-		</body>
-		</html>
-		`))
-
-        data := struct {
-            IsSuperAdmin bool
-            User         models.User
-        }{
-            IsSuperAdmin: isSuper,
-            User:         u,
-        }
-
-        w.Header().Set("Content-Type", "text/html")
-        if err := tmpl.Execute(w, data); err != nil {
-            log.Println("template error:", err)
-            http.Error(w, "Template execution error", http.StatusInternalServerError)
-            return
-        }
-    }).Methods("GET")
 
     return router
 }
